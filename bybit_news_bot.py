@@ -124,9 +124,9 @@ def parse_messages(html: str) -> list:
 
 def format_message(item: dict) -> str:
     text = re.sub(r"\n{3,}", "\n\n", item["text"])  # extra blank lines hatao
-    if len(text) > 3500:
-        text = text[:3500].rsplit("\n", 1)[0] + "…"
-    return f"📢 {text}\n\n🔗 {item['url']}"
+    if len(text) > 3800:
+        text = text[:3800].rsplit("\n", 1)[0] + "…"
+    return f"📢 {text}"
 
 
 def send_to_telegram(text: str) -> bool:
