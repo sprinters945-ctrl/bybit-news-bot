@@ -1,59 +1,69 @@
 """
-Bybit News -> Telegram Bot
-==========================
+Bybit News -> Telegram Bot (v2 — Telegram-source version)
+==========================================================
 
-Bybit ki website khud JS-heavy hai isliye scraping unreliable hoti,
-lekin Bybit ek OFFICIAL PUBLIC API deta hai jahan se saari announcements/
-news milti hain (bina API key ke bhi kaam karta hai):
+api.bybit.com wale approach ko Bybit/Cloudflare block kar raha tha
+GitHub Actions ke server se (403 Forbidden) — yeh known issue hai,
+exchanges automation-server IPs ko block kar dete hain.
 
-    GET https://api.bybit.com/v5/announcements/index
+FIX: Ab hum Bybit ke apne OFFICIAL Telegram announcements channel
+(@Bybit_Announcements) ka public preview page use kar rahe hain:
 
-Yeh script us API ko poll karta hai, naye announcements detect karta hai,
-aur unhe tumhare Telegram channel/group pe auto-post kar deta hai.
+    https://t.me/s/Bybit_Announcements
+
+Yeh Telegram ka apna domain hai (bybit.com nahi), koi login/block nahi
+hai — Telegram in preview pages ko jaanbujh kar publicly crawlable
+rakhta hai (link previews, RSS-jaisे tools ke liye). Same announcements,
+zyada reliable source.
 
 SETUP
 -----
 Do tarike se chala sakte ho:
 
-1) GitHub Actions (cron-scheduled, recommended — same pattern jaise
-   tumhare purane bots): script by default SINGLE-RUN mode me chalta
-   hai — ek baar check karta hai, post karta hai, exit ho jata hai.
-   GitHub Actions workflow isko har X minute pe trigger karega.
+1) GitHub Actions (recommended, cron-scheduled): script by default
+   SINGLE-RUN mode me chalta hai — ek baar check karta hai, post karta
+   hai, exit ho jata hai. GitHub Actions workflow isko har X minute pe
+   trigger karega.
 
 2) VPS/apna server (hamesha-chalta-rahe mode): env var
-   LOOP_FOREVER=1 set karo, phir `python3 bybit_news_bot.py` chalao —
-   yeh khud hi loop me chalta rahega.
+   LOOP_FOREVER=1 set karo, phir `python3 bybit_news_bot.py` chalao.
 
-Dono cases me BOT_TOKEN aur CHANNEL_ID environment variables se
-(ya seedha CONFIG section me) set karne hain.
+Dono cases me BOT_TOKEN aur CHANNEL_ID environment variables se set
+karne hain — yeh TUMHARE naye bot/channel ke hain (jahan post karna
+hai), source channel se inka koi lena-dena nahi.
 
-Har announcement sirf EK BAAR post hoga — already-posted URLs ek
-local file (seen_announcements.json) me save hote hain, so agli baar
-duplicate posts nahi aayenge.
+Har message sirf EK BAAR post hoga — already-posted message-IDs ek
+local file (seen_messages.json) me save hote hain.
 """
 
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 
 # ============ CONFIG — apne values yahan daalo ============
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.environ.get("CHANNEL_ID", "@your_channel_username")  # ya -1001234567890
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@TheCapitalVertex")  # jahan POST karna hai
 
-LOCALE = "en-US"          # announcement language
-ANN_TYPE = ""             # blank = all types. Options: new_crypto, delisting, latest_activities,
-                          # maintenance_system_updates, product_updates etc (see Bybit docs)
-FETCH_LIMIT = 20          # kitni latest announcements har baar fetch karni hain
-POLL_INTERVAL_SECONDS = 300  # sirf tab use hota hai jab LOOP_FOREVER=1 ho (local/VPS run)
+SOURCE_CHANNEL = "Bybit_Announcements"   # Bybit ka official announcements channel (source)
+SOURCE_URL = f"https://t.me/s/{SOURCE_CHANNEL}"
+
+POLL_INTERVAL_SECONDS = 300
 LOOP_FOREVER = os.environ.get("LOOP_FOREVER", "0") == "1"
 
-SEEN_FILE = Path(__file__).parent / "seen_announcements.json"
-BYBIT_API_URL = "https://api.bybit.com/v5/announcements/index"
+SEEN_FILE = Path(__file__).parent / "seen_messages.json"
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{{token}}/sendMessage"
+
+REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 # ============================================================
 
 logging.basicConfig(
@@ -68,56 +78,55 @@ def load_seen() -> set:
         try:
             return set(json.loads(SEEN_FILE.read_text()))
         except json.JSONDecodeError:
-            log.warning("seen_announcements.json corrupt hai, fresh start kar rahe hain")
+            log.warning("seen_messages.json corrupt hai, fresh start kar rahe hain")
     return set()
 
 
 def save_seen(seen: set) -> None:
-    # sirf latest 500 rakho, file infinite na badhe
     trimmed = list(seen)[-500:]
     SEEN_FILE.write_text(json.dumps(trimmed))
 
 
-REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.bybit.com/",
-}
-
-
-def fetch_announcements() -> list:
-    params = {"locale": LOCALE, "limit": FETCH_LIMIT}
-    if ANN_TYPE:
-        params["type"] = ANN_TYPE
+def fetch_source_html() -> str:
     try:
-        resp = requests.get(BYBIT_API_URL, params=params, headers=REQUEST_HEADERS, timeout=15)
+        resp = requests.get(SOURCE_URL, headers=REQUEST_HEADERS, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("retCode") != 0:
-            log.error("Bybit API error: %s", data.get("retMsg"))
-            return []
-        return data.get("result", {}).get("list", [])
+        return resp.text
     except requests.RequestException as e:
-        log.error("Bybit API fetch failed: %s", e)
+        log.error("Source channel fetch failed: %s", e)
+        return ""
+
+
+def parse_messages(html: str) -> list:
+    if not html:
         return []
+    soup = BeautifulSoup(html, "html.parser")
+    messages = []
+
+    for msg_div in soup.select("div.tgme_widget_message"):
+        post_id = msg_div.get("data-post")
+        if not post_id:
+            continue
+
+        text_div = msg_div.select_one(".tgme_widget_message_text")
+        text = text_div.get_text(separator="\n").strip() if text_div else ""
+        if not text:
+            continue  # sirf-image/video wale posts (bina caption) skip
+
+        messages.append({
+            "id": post_id,
+            "text": text,
+            "url": f"https://t.me/{post_id}",
+        })
+
+    return messages  # page me already oldest -> newest order me aate hain
 
 
 def format_message(item: dict) -> str:
-    title = item.get("title", "").strip()
-    description = item.get("description", "").strip()
-    url = item.get("url", "")
-    type_title = item.get("type", {}).get("title", "")
-
-    msg = f"📢 <b>{title}</b>\n"
-    if type_title:
-        msg += f"🏷 {type_title}\n"
-    if description and description != title:
-        msg += f"\n{description}\n"
-    if url:
-        msg += f"\n🔗 <a href=\"{url}\">Read more</a>"
-    return msg
+    text = re.sub(r"\n{3,}", "\n\n", item["text"])  # extra blank lines hatao
+    if len(text) > 3500:
+        text = text[:3500].rsplit("\n", 1)[0] + "…"
+    return f"📢 {text}\n\n🔗 {item['url']}"
 
 
 def send_to_telegram(text: str) -> bool:
@@ -125,7 +134,6 @@ def send_to_telegram(text: str) -> bool:
     payload = {
         "chat_id": CHANNEL_ID,
         "text": text,
-        "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
     try:
@@ -140,24 +148,23 @@ def send_to_telegram(text: str) -> bool:
 
 
 def run_once(seen: set) -> set:
-    announcements = fetch_announcements()
-    if not announcements:
+    html = fetch_source_html()
+    messages = parse_messages(html)
+    if not messages:
+        log.info("Source se koi message parse nahi hua is baar.")
         return seen
 
-    # oldest-first post karo taaki channel me chronological order bane
-    for item in reversed(announcements):
-        url = item.get("url")
-        if not url or url in seen:
+    for item in messages:
+        if item["id"] in seen:
             continue
 
-        message = format_message(item)
-        if send_to_telegram(message):
-            log.info("Posted: %s", item.get("title"))
-            seen.add(url)
+        if send_to_telegram(format_message(item)):
+            log.info("Posted: %s", item["id"])
+            seen.add(item["id"])
             save_seen(seen)
-            time.sleep(2)  # Telegram rate limit se bachne ke liye chhota gap
+            time.sleep(2)
         else:
-            log.warning("Skip (send fail), agli baar retry hoga: %s", item.get("title"))
+            log.warning("Skip (send fail), agli baar retry hoga: %s", item["id"])
 
     return seen
 
@@ -166,14 +173,12 @@ def main():
     seen = load_seen()
 
     if LOOP_FOREVER:
-        # VPS / apna server pe chhodne ke liye (hamesha chalta rahega)
         log.info("Loop mode ON. Har %ss me check karega.", POLL_INTERVAL_SECONDS)
         while True:
             seen = run_once(seen)
             time.sleep(POLL_INTERVAL_SECONDS)
     else:
-        # GitHub Actions / cron ke liye — ek baar check karke exit
-        log.info("Single-run mode. Ek baar check karke exit ho jayega (schedule outside karega).")
+        log.info("Single-run mode. Ek baar check karke exit ho jayega.")
         run_once(seen)
 
 
