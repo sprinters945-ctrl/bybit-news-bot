@@ -19,7 +19,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install requests beautifulsoup4
 
       - name: Run bot (single check)
         env:
@@ -27,14 +27,14 @@ jobs:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
         run: python bybit_news_bot.py
 
-      - name: Save seen-announcements state
+      - name: Save seen-messages state
         run: |
-          if [ -f seen_announcements.json ]; then
+          if [ -f seen_messages.json ]; then
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add seen_announcements.json
-            git diff --staged --quiet || git commit -m "update seen announcements"
+            git add seen_messages.json
+            git diff --staged --quiet || git commit -m "update seen messages"
             git push
           else
-            echo "seen_announcements.json abhi bani nahi (koi post successful nahi hui) — skip commit"
+            echo "seen_messages.json abhi bani nahi (koi post successful nahi hui) — skip commit"
           fi
