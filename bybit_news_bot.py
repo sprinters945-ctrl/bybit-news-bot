@@ -78,12 +78,21 @@ def save_seen(seen: set) -> None:
     SEEN_FILE.write_text(json.dumps(trimmed))
 
 
+REQUEST_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.bybit.com/",
+}
+
+
 def fetch_announcements() -> list:
     params = {"locale": LOCALE, "limit": FETCH_LIMIT}
     if ANN_TYPE:
         params["type"] = ANN_TYPE
     try:
-        resp = requests.get(BYBIT_API_URL, params=params, timeout=15)
+        resp = requests.get(BYBIT_API_URL, params=params, headers=REQUEST_HEADERS, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         if data.get("retCode") != 0:
