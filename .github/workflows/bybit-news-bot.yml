@@ -2,11 +2,11 @@ name: Bybit News Bot
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch: {}
+    - cron: '*/10 * * * *'   # har 10 minute try karega (GitHub queue ki wajah se kabhi thoda late bhi ho sakta hai)
+  workflow_dispatch: {}       # Actions tab se manually bhi chala sakte ho (test ke liye)
 
 permissions:
-  contents: write
+  contents: write             # seen_announcements.json commit back karne ke liye zaroori
 
 jobs:
   run-bot:
@@ -29,8 +29,12 @@ jobs:
 
       - name: Save seen-announcements state
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_announcements.json
-          git diff --staged --quiet || git commit -m "update seen announcements"
-          git push
+          if [ -f seen_announcements.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add seen_announcements.json
+            git diff --staged --quiet || git commit -m "update seen announcements"
+            git push
+          else
+            echo "seen_announcements.json abhi bani nahi (koi post successful nahi hui) — skip commit"
+          fi
